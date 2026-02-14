@@ -11,7 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Smart auto-detection for 6 log formats: JSON, Laravel, Django, Go (slog), Nginx/Apache, Plain text
 - Manual format override with `--format` flag
 - Multi-file monitoring: `logpulse app.log nginx.log`
-- Docker integration: `logpulse docker <container> [file]`
+- Docker integration with smart prefix match + auto-reconnect (works with Swarm/Compose)
+- SSH remote source: `logpulse ssh user@host /path` or `logpulse ssh user@host docker <name>`
+- Kubernetes source: `logpulse k8s <pod>` with namespace, container, label selector support
+- Docker Compose source: `logpulse compose <service>`
 - Stdin pipe support: `docker logs -f app | logpulse`
 - Regex-powered filter mode (`/` key)
 - Error-only mode (`e` key)

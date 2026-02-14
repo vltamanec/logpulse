@@ -36,21 +36,27 @@ enum FormatArg {
 #[command(about = "High-performance TUI log analyzer with smart format detection")]
 #[command(version)]
 #[command(after_help = "\x1b[1mExamples:\x1b[0m
-  logpulse /var/log/syslog                        # Monitor a local file
-  logpulse app.log nginx.log                       # Monitor multiple files
-  logpulse --format laravel app.log                # Force Laravel parser
-  docker logs -f myapp 2>&1 | logpulse             # Pipe from Docker stdout
-  logpulse docker myapp                            # Docker container stdout
-  logpulse docker myapp /var/log/app.log           # File inside container
+  logpulse /var/log/syslog                              # Local file
+  logpulse app.log nginx.log                             # Multiple files
+  logpulse --format laravel app.log                      # Force parser
+  docker logs -f myapp 2>&1 | logpulse                   # Pipe stdin
+  logpulse docker myapi                                  # Smart match (Swarm/Compose)
+  logpulse docker myapi /var/log/app.log                 # File inside container
+  logpulse ssh user@host docker myapi                    # Remote Docker via SSH
+  logpulse ssh user@host /var/log/app.log                # Remote file via SSH
+  logpulse ssh user@host -J bastion.corp.com docker api  # Via jump host / proxy
+  logpulse k8s my-pod -n staging                         # Kubernetes pod
+  logpulse k8s -l app=api -n prod                        # K8s by label
+  logpulse compose api                                   # Docker Compose service
 
 \x1b[1mHotkeys:\x1b[0m
-  q        Quit
-  Space    Pause / Resume
-  /        Filter (regex)
-  e        Toggle error-only mode
-  Enter    Detail view (JSON pretty-print)
-  c        Clear buffer
-  j/k ↑/↓  Navigate")]
+  q        Quit              Space    Pause / Resume
+  /        Filter (regex)    e        Error-only mode
+  Enter    Detail view       c        Clear buffer
+  j/k ↑/↓  Navigate          Ctrl+C   Force quit
+
+\x1b[1mUpdate:\x1b[0m
+  curl -fsSL https://raw.githubusercontent.com/vltamanec/logpulse/main/install.sh | sh")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -69,18 +75,76 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Monitor logs from a Docker container
-    #[command(after_help = "\x1b[1mExamples:\x1b[0m
-  logpulse docker my-laravel                       # Container stdout/stderr
-  logpulse docker my-laravel /var/log/laravel.log  # Specific file inside
-  logpulse docker my-go-app /app/logs/server.log   # Go app in container
-
-Auto-detects bash/sh inside the container.")]
+    /// Monitor Docker container (smart prefix match + auto-reconnect)
+    #[command(
+        after_help = "Smart matching: 'logpulse docker myapi' finds myapi.1.abc123 in Swarm.
+Auto-reconnects when container restarts or redeploys."
+    )]
     Docker {
-        /// Container name or ID
+        /// Container name or prefix (e.g. 'myapi' matches 'myapi.1.abc123')
         container: String,
+        /// Path to log file inside the container (omit for stdout)
+        file: Option<String>,
+    },
 
-        /// Path to log file inside the container (omit to use docker logs)
+    /// Monitor via SSH (remote files or remote Docker containers)
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  logpulse ssh user@host /var/log/app.log                # Remote file
+  logpulse ssh user@host docker myapi                    # Remote container
+  logpulse ssh user@host docker myapi /var/log/app.log   # File in remote container
+  logpulse ssh prod-server docker myapi                  # Via ~/.ssh/config
+  logpulse ssh user@host -J bastion.corp.com docker api  # Via jump host
+  logpulse ssh user@host -p 2222 -i ~/.ssh/id_ed25519 /var/log/app.log
+
+Also respects ~/.ssh/config for keys, ports, ProxyJump, ProxyCommand.")]
+    Ssh {
+        /// SSH target (user@host or host from ~/.ssh/config)
+        target: String,
+        /// SSH port (default: 22)
+        #[arg(short = 'p', long)]
+        port: Option<u16>,
+        /// Path to private key
+        #[arg(short = 'i', long)]
+        key: Option<String>,
+        /// Jump host (ProxyJump), e.g. bastion.corp.com
+        #[arg(short = 'J', long)]
+        jump: Option<String>,
+        /// 'docker <prefix> [file]' or '/path/to/file.log'
+        args: Vec<String>,
+    },
+
+    /// Monitor Kubernetes pod logs
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  logpulse k8s my-pod                                    # Pod stdout
+  logpulse k8s my-pod -n staging                         # Specific namespace
+  logpulse k8s my-pod -c sidecar                         # Specific container
+  logpulse k8s -l app=api -n prod                        # Find pod by label
+  logpulse k8s my-pod /var/log/app.log                   # File inside pod")]
+    K8s {
+        /// Pod name (omit if using --label)
+        pod: Option<String>,
+        /// Namespace
+        #[arg(short, long, default_value = "default")]
+        namespace: String,
+        /// Container name (for multi-container pods)
+        #[arg(short, long)]
+        container: Option<String>,
+        /// Label selector to find pod (e.g. 'app=api')
+        #[arg(short, long)]
+        label: Option<String>,
+        /// Path to log file inside pod (omit for stdout)
+        file: Option<String>,
+    },
+
+    /// Monitor Docker Compose service
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  logpulse compose api                                   # Service logs
+  logpulse compose api -f docker-compose.prod.yml        # Custom compose file")]
+    Compose {
+        /// Service name
+        service: String,
+        /// Path to compose file
+        #[arg(short, long)]
         file: Option<String>,
     },
 }
@@ -89,7 +153,6 @@ Auto-detects bash/sh inside the container.")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Handle --completions
     if let Some(shell) = cli.completions {
         let mut cmd = Cli::command();
         generate(shell, &mut cmd, "logpulse", &mut io::stdout());
@@ -110,16 +173,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Docker { container, file }) => {
             source::start_docker_source(container, file).await?
         }
+        Some(Commands::Ssh {
+            target,
+            port,
+            key,
+            jump,
+            args,
+        }) => {
+            let opts = source::SshOpts {
+                target,
+                port,
+                key,
+                jump,
+            };
+            parse_ssh_args(opts, args).await?
+        }
+        Some(Commands::K8s {
+            pod,
+            namespace,
+            container,
+            label,
+            file,
+        }) => source::start_k8s_source(pod, namespace, container, label, file).await?,
+        Some(Commands::Compose { service, file }) => {
+            source::start_compose_source(service, file).await?
+        }
         None => {
             let is_tty = atty::is(atty::Stream::Stdin);
 
             if cli.files.is_empty() && !is_tty {
-                // Piped stdin: docker logs -f app | logpulse
                 source::start_stdin_source().await?
             } else if cli.files.is_empty() {
-                eprintln!(
-                    "Usage: logpulse <FILE>... or pipe via stdin or logpulse docker <CONTAINER>"
-                );
+                eprintln!("Usage: logpulse <FILE>... | logpulse docker <NAME> | logpulse ssh ... | logpulse k8s ...");
                 eprintln!("Try: logpulse --help");
                 std::process::exit(1);
             } else if cli.files.len() == 1 && cli.files[0].to_string_lossy() == "-" {
@@ -133,12 +218,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_tui(rx, name, format_name).await
 }
 
+/// Parse SSH subcommand args: ssh user@host docker myapi [file] OR ssh user@host /path/to/file
+async fn parse_ssh_args(
+    opts: source::SshOpts,
+    args: Vec<String>,
+) -> Result<(mpsc::UnboundedReceiver<String>, String), Box<dyn std::error::Error>> {
+    if args.is_empty() {
+        return Err("ssh requires additional arguments: docker <name> or /path/to/file".into());
+    }
+
+    if args[0] == "docker" {
+        if args.len() < 2 {
+            return Err("usage: logpulse ssh <target> docker <container> [file]".into());
+        }
+        let prefix = args[1].clone();
+        let file = args.get(2).cloned();
+        source::start_ssh_docker_source(opts, prefix, file).await
+    } else {
+        source::start_ssh_file_source(opts, args[0].clone()).await
+    }
+}
+
 async fn run_tui(
     mut rx: mpsc::UnboundedReceiver<String>,
     name: String,
     format_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Collect initial lines for parser detection
     let mut initial_lines: Vec<String> = Vec::new();
     while let Ok(line) = rx.try_recv() {
         initial_lines.push(line);
@@ -157,7 +262,6 @@ async fn run_tui(
 
     eprintln!("Format: {}", detected_parser.name());
 
-    // Set up terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;

@@ -14,7 +14,7 @@
 <p align="center">
   A <code>tail -f</code> replacement that actually understands your logs.<br>
   Zero config. Auto-detects Laravel, Django, Go, Nginx, JSON.<br>
-  Works with local files, stdin, and Docker containers.
+  Works with local files, stdin, Docker, SSH, Kubernetes, and Compose.
 </p>
 
 ---
@@ -27,10 +27,19 @@
 curl -fsSL https://raw.githubusercontent.com/vltamanec/logpulse/main/install.sh | sh
 ```
 
+**Update** to the latest version — the same command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vltamanec/logpulse/main/install.sh | sh
+```
+
 **Cargo** (from source):
 
 ```sh
 cargo install logpulse
+
+# Update
+cargo install logpulse --force
 ```
 
 **Manual download**: grab a binary from [Releases](https://github.com/vltamanec/logpulse/releases/latest).
@@ -70,12 +79,77 @@ logpulse --format laravel storage/logs/laravel.log
 
 # Pipe from Docker (auto-detects stdin)
 docker logs -f my-app 2>&1 | logpulse
+```
 
-# Docker container — log file inside
-logpulse docker my-app /var/log/app.log
+## Remote Sources
 
-# Docker container — stdout
-logpulse docker my-app
+### Docker (smart prefix match + auto-reconnect)
+
+```sh
+# Container stdout — matches myapi.1.abc123 in Swarm
+logpulse docker myapi
+
+# Log file inside container
+logpulse docker myapi /var/log/app.log
+```
+
+Finds containers by name prefix (`docker ps --filter name=<prefix>`). Works with Docker Swarm and Compose — no manager access needed. Auto-reconnects when a container restarts or redeploys (tries for 5 minutes).
+
+### SSH (remote files & remote Docker)
+
+```sh
+# Remote log file
+logpulse ssh user@host /var/log/app.log
+
+# Remote Docker container (same smart matching)
+logpulse ssh user@host docker myapi
+
+# Log file inside remote container
+logpulse ssh user@host docker myapi /var/log/app.log
+```
+
+**Proxy / bastion / jump host** — pass directly, no config needed:
+
+```sh
+# Via jump host (corporate proxy, bastion)
+logpulse ssh user@host -J bastion.corp.com docker myapi
+
+# Custom port + key
+logpulse ssh user@host -p 2222 -i ~/.ssh/id_ed25519 /var/log/app.log
+
+# All together
+logpulse ssh deploy@10.0.1.50 -J bastion.corp.com -p 2222 docker myapi
+```
+
+Also respects `~/.ssh/config` for keys, ports, `ProxyJump`, `ProxyCommand` — use whichever is more convenient.
+
+### Kubernetes
+
+```sh
+# Pod stdout
+logpulse k8s my-pod
+
+# Specific namespace
+logpulse k8s my-pod -n staging
+
+# Specific container in multi-container pod
+logpulse k8s my-pod -c sidecar
+
+# Find pod by label
+logpulse k8s -l app=api -n prod
+
+# Log file inside pod
+logpulse k8s my-pod /var/log/app.log
+```
+
+### Docker Compose
+
+```sh
+# Service logs
+logpulse compose api
+
+# Custom compose file
+logpulse compose api -f docker-compose.prod.yml
 ```
 
 ## Hotkeys
@@ -124,9 +198,11 @@ Use `--format` to override: `logpulse --format nginx access.log`
 
 ## Requirements
 
-- **Local mode**: just the binary
+- **Local / stdin mode**: just the binary
 - **Docker mode**: `docker` CLI available and running
-- **Stdin mode**: pipe anything in
+- **SSH mode**: `ssh` CLI with key-based auth configured
+- **Kubernetes mode**: `kubectl` with cluster access configured
+- **Compose mode**: `docker compose` (v2) available
 
 Binary is ~2.7 MB, statically optimized. No runtime dependencies.
 
