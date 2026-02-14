@@ -24,16 +24,19 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
                         KeyCode::Esc => {
                             app.input_mode = InputMode::Normal;
                             app.filter_text.clear();
+                            app.update_filter_regex();
                         }
                         KeyCode::Enter => {
                             app.input_mode = InputMode::Normal;
-                            // filter_text remains active
+                            app.update_filter_regex();
                         }
                         KeyCode::Backspace => {
                             app.filter_text.pop();
+                            app.update_filter_regex();
                         }
                         KeyCode::Char(c) => {
                             app.filter_text.push(c);
+                            app.update_filter_regex();
                         }
                         _ => {}
                     },

@@ -4,32 +4,41 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
-/// Spawns a background task that sends log lines through an mpsc channel.
-/// Returns (receiver, display_name).
-pub async fn start_file_source(
-    path: PathBuf,
+/// Start monitoring multiple files. All lines go into one channel.
+pub async fn start_multi_file_source(
+    paths: Vec<PathBuf>,
 ) -> Result<(mpsc::UnboundedReceiver<String>, String), Box<dyn std::error::Error>> {
-    let path = path.canonicalize().unwrap_or(path);
-    if !path.exists() {
-        return Err(format!("file not found: {}", path.display()).into());
-    }
-
-    let name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
     let (tx, rx) = mpsc::unbounded_channel();
 
-    // Send existing content
-    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-    for line in content.lines() {
-        let _ = tx.send(line.to_string());
+    let mut names: Vec<String> = Vec::new();
+    let mut mux = linemux::MuxedLines::new()?;
+
+    for path in &paths {
+        let path = path.canonicalize().unwrap_or(path.clone());
+        if !path.exists() {
+            return Err(format!("file not found: {}", path.display()).into());
+        }
+
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        names.push(name);
+
+        // Send existing content
+        let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        for line in content.lines() {
+            let _ = tx.send(line.to_string());
+        }
+
+        mux.add_file(&path).await?;
     }
 
-    // Tail new lines with linemux
-    let mut mux = linemux::MuxedLines::new()?;
-    mux.add_file(&path).await?;
+    let display_name = if names.len() == 1 {
+        names[0].clone()
+    } else {
+        format!("{} files ({})", names.len(), names.join(", "))
+    };
 
     tokio::spawn(async move {
         loop {
@@ -45,7 +54,7 @@ pub async fn start_file_source(
         }
     });
 
-    Ok((rx, name))
+    Ok((rx, display_name))
 }
 
 pub async fn start_stdin_source(

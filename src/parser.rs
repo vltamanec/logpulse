@@ -237,6 +237,18 @@ fn fallback_parse(line: &str) -> LogEntry {
     }
 }
 
+/// Get a parser by name (for --format flag).
+pub fn get_parser_by_name(name: &str) -> Box<dyn LogParser> {
+    match name.to_lowercase().as_str() {
+        "json" => Box::new(JsonParser),
+        "laravel" => Box::new(LaravelParser),
+        "django" => Box::new(DjangoParser),
+        "go" => Box::new(GoLogParser),
+        "nginx" | "apache" => Box::new(NginxApacheParser),
+        _ => Box::new(PlainParser),
+    }
+}
+
 /// Auto-detect the best parser from a set of sample lines.
 pub fn detect_parser(sample_lines: &[&str]) -> Box<dyn LogParser> {
     let parsers: Vec<Box<dyn LogParser>> = vec![
@@ -262,5 +274,210 @@ pub fn detect_parser(sample_lines: &[&str]) -> Box<dyn LogParser> {
         best.unwrap()
     } else {
         Box::new(PlainParser)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- JSON Parser ---
+    #[test]
+    fn json_can_parse() {
+        let p = JsonParser;
+        assert!(p.can_parse(r#"{"level":"error","msg":"fail"}"#));
+        assert!(p.can_parse(r#"  {"key": "value"}  "#));
+        assert!(!p.can_parse("not json at all"));
+        assert!(!p.can_parse("{incomplete"));
+    }
+
+    #[test]
+    fn json_parse_fields() {
+        let p = JsonParser;
+        let entry = p.parse(r#"{"level":"error","msg":"connection failed","service":"api"}"#);
+        assert_eq!(entry.level, LogLevel::Error);
+        assert_eq!(entry.message.as_deref(), Some("connection failed"));
+    }
+
+    #[test]
+    fn json_parse_severity_alias() {
+        let p = JsonParser;
+        let entry = p.parse(r#"{"severity":"WARNING","text":"slow query"}"#);
+        assert_eq!(entry.level, LogLevel::Warn);
+        assert_eq!(entry.message.as_deref(), Some("slow query"));
+    }
+
+    // --- Laravel Parser ---
+    #[test]
+    fn laravel_can_parse() {
+        let p = LaravelParser;
+        assert!(p.can_parse("[2024-01-15 10:30:01] production.ERROR: Connection refused"));
+        assert!(p.can_parse("[2024-12-31 23:59:59] local.INFO: ok"));
+        assert!(!p.can_parse("not laravel"));
+        assert!(!p.can_parse(r#"{"level":"error"}"#));
+    }
+
+    #[test]
+    fn laravel_parse_fields() {
+        let p = LaravelParser;
+        let entry =
+            p.parse("[2024-01-15 10:30:01] production.ERROR: Connection refused to database");
+        assert_eq!(entry.level, LogLevel::Error);
+        assert_eq!(entry.timestamp.as_deref(), Some("2024-01-15 10:30:01"));
+        assert_eq!(
+            entry.message.as_deref(),
+            Some("Connection refused to database")
+        );
+    }
+
+    // --- Django Parser ---
+    #[test]
+    fn django_can_parse() {
+        let p = DjangoParser;
+        assert!(p.can_parse("[15/Jan/2024 10:30:11] ERROR [django.request] Internal Server Error"));
+        assert!(!p.can_parse("[2024-01-15 10:30:01] production.ERROR: msg"));
+        assert!(!p.can_parse("plain text"));
+    }
+
+    #[test]
+    fn django_parse_fields() {
+        let p = DjangoParser;
+        let entry = p.parse(
+            "[15/Jan/2024 10:30:11] ERROR [django.request] Internal Server Error: /api/data",
+        );
+        assert_eq!(entry.level, LogLevel::Error);
+        assert_eq!(entry.timestamp.as_deref(), Some("15/Jan/2024 10:30:11"));
+        assert_eq!(
+            entry.message.as_deref(),
+            Some("Internal Server Error: /api/data")
+        );
+        assert_eq!(entry.metadata.as_deref(), Some("django.request"));
+    }
+
+    // --- Go Parser ---
+    #[test]
+    fn go_slog_can_parse() {
+        let p = GoLogParser;
+        assert!(p.can_parse("time=2024-01-15T10:30:09Z level=ERROR msg=\"panic recovered\""));
+        assert!(p.can_parse("time=2024-01-15T10:30:10Z level=INFO msg=\"health check passed\""));
+    }
+
+    #[test]
+    fn go_std_can_parse() {
+        let p = GoLogParser;
+        assert!(p.can_parse("2024/01/15 10:30:01 Starting server on :8080"));
+        assert!(!p.can_parse("plain text without timestamp"));
+    }
+
+    #[test]
+    fn go_slog_parse_fields() {
+        let p = GoLogParser;
+        let entry = p.parse("time=2024-01-15T10:30:09Z level=ERROR msg=\"panic recovered\"");
+        assert_eq!(entry.level, LogLevel::Error);
+        assert_eq!(
+            entry.timestamp.as_deref(),
+            Some("time=2024-01-15T10:30:09Z")
+        );
+    }
+
+    // --- Nginx/Apache Parser ---
+    #[test]
+    fn nginx_can_parse() {
+        let p = NginxApacheParser;
+        assert!(p.can_parse(
+            r#"192.168.1.1 - - [15/Jan/2024:10:30:07 +0000] "GET /api/users HTTP/1.1" 200 1234"#
+        ));
+        assert!(!p.can_parse("not nginx"));
+    }
+
+    #[test]
+    fn nginx_parse_status_levels() {
+        let p = NginxApacheParser;
+
+        let e200 = p.parse(r#"10.0.0.1 - - [15/Jan/2024:10:30:07 +0000] "GET / HTTP/1.1" 200 512"#);
+        assert_eq!(e200.level, LogLevel::Info);
+
+        let e404 =
+            p.parse(r#"10.0.0.1 - - [15/Jan/2024:10:30:07 +0000] "GET /missing HTTP/1.1" 404 0"#);
+        assert_eq!(e404.level, LogLevel::Warn);
+
+        let e500 =
+            p.parse(r#"10.0.0.1 - - [15/Jan/2024:10:30:07 +0000] "POST /api HTTP/1.1" 500 89"#);
+        assert_eq!(e500.level, LogLevel::Error);
+    }
+
+    // --- Plain Parser ---
+    #[test]
+    fn plain_detects_levels() {
+        let p = PlainParser;
+        assert_eq!(p.parse("ERROR: something broke").level, LogLevel::Error);
+        assert_eq!(p.parse("WARN: disk full").level, LogLevel::Warn);
+        assert_eq!(p.parse("INFO: all good").level, LogLevel::Info);
+        assert_eq!(p.parse("just text").level, LogLevel::Unknown);
+    }
+
+    // --- Auto-detection ---
+    #[test]
+    fn detect_parser_json() {
+        let lines = vec![
+            r#"{"level":"info","msg":"start"}"#,
+            r#"{"level":"error","msg":"fail"}"#,
+        ];
+        let p = detect_parser(&lines);
+        assert_eq!(p.name(), "JSON");
+    }
+
+    #[test]
+    fn detect_parser_laravel() {
+        let lines = vec![
+            "[2024-01-15 10:30:01] production.ERROR: Connection refused",
+            "[2024-01-15 10:30:02] production.INFO: Request ok",
+        ];
+        let p = detect_parser(&lines);
+        assert_eq!(p.name(), "Laravel");
+    }
+
+    #[test]
+    fn detect_parser_mixed_falls_back() {
+        let lines = vec!["just plain text", "another line", "nothing special"];
+        let p = detect_parser(&lines);
+        assert_eq!(p.name(), "Plain");
+    }
+
+    #[test]
+    fn detect_parser_empty() {
+        let lines: Vec<&str> = vec![];
+        let p = detect_parser(&lines);
+        assert_eq!(p.name(), "Plain");
+    }
+
+    // --- get_parser_by_name ---
+    #[test]
+    fn get_parser_by_name_works() {
+        assert_eq!(get_parser_by_name("json").name(), "JSON");
+        assert_eq!(get_parser_by_name("laravel").name(), "Laravel");
+        assert_eq!(get_parser_by_name("django").name(), "Django");
+        assert_eq!(get_parser_by_name("go").name(), "Go");
+        assert_eq!(get_parser_by_name("nginx").name(), "Nginx/Apache");
+        assert_eq!(get_parser_by_name("unknown").name(), "Plain");
+    }
+
+    // --- Edge cases ---
+    #[test]
+    fn empty_line() {
+        let p = PlainParser;
+        let entry = p.parse("");
+        assert_eq!(entry.level, LogLevel::Unknown);
+        assert_eq!(entry.raw, "");
+    }
+
+    #[test]
+    fn malformed_json() {
+        let p = JsonParser;
+        // can_parse returns false for incomplete JSON
+        assert!(!p.can_parse("{incomplete"));
+        // But if forced, parse still works
+        let entry = p.parse("{incomplete");
+        assert_eq!(entry.level, LogLevel::Unknown);
     }
 }

@@ -43,14 +43,33 @@ cargo install logpulse
 | macOS ARM64 (Apple Silicon) | `logpulse-vX.X.X-aarch64-apple-darwin.tar.gz` |
 | Windows x86_64 | `logpulse-vX.X.X-x86_64-pc-windows-msvc.zip` |
 
+**Shell completions:**
+
+```sh
+# Bash
+logpulse --completions bash > ~/.local/share/bash-completion/completions/logpulse
+
+# Zsh
+logpulse --completions zsh > ~/.zfunc/_logpulse
+
+# Fish
+logpulse --completions fish > ~/.config/fish/completions/logpulse.fish
+```
+
 ## Quick Start
 
 ```sh
 # Local log file
 logpulse /var/log/syslog
 
-# Pipe from Docker (stdout)
-docker logs -f my-app 2>&1 | logpulse -
+# Multiple files at once
+logpulse app.log nginx.log error.log
+
+# Force a specific parser
+logpulse --format laravel storage/logs/laravel.log
+
+# Pipe from Docker (auto-detects stdin)
+docker logs -f my-app 2>&1 | logpulse
 
 # Docker container — log file inside
 logpulse docker my-app /var/log/app.log
@@ -65,7 +84,7 @@ logpulse docker my-app
 |-----|--------|
 | `q` | Quit |
 | `Space` | Pause / Resume (freeze mode) |
-| `/` | Filter — type to search, Enter to apply, Esc to cancel |
+| `/` | Filter — regex search, Enter to apply, Esc to cancel |
 | `e` | Toggle error-only mode |
 | `Enter` | Detail view (JSON pretty-print / stacktrace) |
 | `c` | Clear screen buffer |
@@ -76,15 +95,16 @@ logpulse docker my-app
 ## Supported Formats
 
 LogPulse auto-detects the log format from the first lines. No configuration needed.
+Use `--format` to override: `logpulse --format nginx access.log`
 
-| Format | Example |
-|--------|---------|
-| **JSON** | `{"level":"error","msg":"failed","service":"api"}` |
-| **Laravel** | `[2024-01-15 10:30:01] production.ERROR: Connection refused` |
-| **Django** | `[15/Jan/2024 10:30:11] ERROR [django.request] Internal Server Error` |
-| **Go (slog)** | `time=2024-01-15T10:30:09Z level=ERROR msg="panic recovered"` |
-| **Nginx/Apache** | `192.168.1.1 - - [15/Jan/2024:10:30:07] "GET /api" 500 89` |
-| **Plain text** | Anything else — level detected by keywords |
+| Format | Flag | Example |
+|--------|------|---------|
+| **JSON** | `--format json` | `{"level":"error","msg":"failed","service":"api"}` |
+| **Laravel** | `--format laravel` | `[2024-01-15 10:30:01] production.ERROR: Connection refused` |
+| **Django** | `--format django` | `[15/Jan/2024 10:30:11] ERROR [django.request] Internal Server Error` |
+| **Go (slog)** | `--format go` | `time=2024-01-15T10:30:09Z level=ERROR msg="panic recovered"` |
+| **Nginx/Apache** | `--format nginx` | `192.168.1.1 - - [15/Jan/2024:10:30:07] "GET /api" 500 89` |
+| **Plain text** | `--format plain` | Anything else — level detected by keywords |
 
 ## How It Works
 
@@ -116,9 +136,14 @@ Binary is ~2.7 MB, statically optimized. No runtime dependencies.
 git clone https://github.com/vltamanec/logpulse.git
 cd logpulse
 cargo build --release
+cargo test
 # Binary at ./target/release/logpulse
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
-MIT
+[MIT](LICENSE)

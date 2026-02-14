@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use regex::Regex;
+
 pub const MAX_LOG_LINES: usize = 10_000;
 const EPS_WINDOW_SECS: usize = 60;
 
@@ -45,6 +47,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub view_mode: ViewMode,
     pub filter_text: String,
+    pub filter_regex: Option<Regex>,
     pub filename: String,
     pub error_count: u64,
     pub total_count: u64,
@@ -66,6 +69,7 @@ impl App {
             input_mode: InputMode::Normal,
             view_mode: ViewMode::Feed,
             filter_text: String::new(),
+            filter_regex: None,
             filename,
             error_count: 0,
             total_count: 0,
@@ -104,6 +108,17 @@ impl App {
         }
     }
 
+    pub fn update_filter_regex(&mut self) {
+        self.filter_regex = if self.filter_text.is_empty() {
+            None
+        } else {
+            // Try regex first, fall back to literal escaped pattern
+            Regex::new(&format!("(?i){}", &self.filter_text))
+                .or_else(|_| Regex::new(&format!("(?i){}", regex::escape(&self.filter_text))))
+                .ok()
+        };
+    }
+
     pub fn visible_logs(&self) -> Vec<(usize, &LogEntry)> {
         self.logs
             .iter()
@@ -112,13 +127,10 @@ impl App {
                 if self.error_only && !matches!(entry.level, LogLevel::Error | LogLevel::Fatal) {
                     return false;
                 }
-                if !self.filter_text.is_empty()
-                    && !entry
-                        .raw
-                        .to_lowercase()
-                        .contains(&self.filter_text.to_lowercase())
-                {
-                    return false;
+                if let Some(ref re) = self.filter_regex {
+                    if !re.is_match(&entry.raw) {
+                        return false;
+                    }
                 }
                 true
             })
