@@ -1,0 +1,16 @@
+[2024-01-15 10:30:01] production.ERROR: Connection refused to database
+[2024-01-15 10:30:02] production.INFO: Request processed successfully
+[2024-01-15 10:30:03] production.WARNING: Slow query detected (2.5s)
+[2024-01-15 10:30:04] production.DEBUG: Cache hit for key=user:123
+[2024-01-15 10:30:05] production.ERROR: Undefined variable: $user
+{"level":"error","msg":"failed to connect","service":"api","timestamp":"2024-01-15T10:30:06Z"}
+{"level":"info","msg":"server started on port 8080","service":"api"}
+192.168.1.1 - - [15/Jan/2024:10:30:07 +0000] "GET /api/users HTTP/1.1" 200 1234
+192.168.1.2 - - [15/Jan/2024:10:30:08 +0000] "POST /api/login HTTP/1.1" 500 89
+time=2024-01-15T10:30:09Z level=ERROR msg="panic recovered" source=main.go:42
+time=2024-01-15T10:30:10Z level=INFO msg="health check passed"
+[15/Jan/2024 10:30:11] ERROR [django.request] Internal Server Error: /api/data
+[15/Jan/2024 10:30:12] INFO [django.server] "GET /admin/" 200
+Plain text log line without any specific format
+ERROR: Something went terribly wrong\!
+WARN: Disk usage at 85%
