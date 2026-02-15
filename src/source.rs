@@ -1,9 +1,67 @@
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
+
+const TAIL_LINES: usize = 1000;
+/// Chunk size for seeking backwards through large files.
+const TAIL_CHUNK: u64 = 64 * 1024;
+
+/// Read the last `n` lines from a file by seeking from the end.
+/// For small files (< TAIL_CHUNK), reads the whole thing.
+/// For large files, reads backwards in chunks until enough newlines are found.
+fn read_tail(path: &std::path::Path, n: usize) -> std::io::Result<Vec<String>> {
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+
+    if file_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Small file — just read it all
+    if file_len <= TAIL_CHUNK {
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)?;
+        let lines: Vec<String> = buf.lines().map(String::from).collect();
+        let skip = lines.len().saturating_sub(n);
+        return Ok(lines.into_iter().skip(skip).collect());
+    }
+
+    // Large file — seek backwards in chunks
+    let mut collected = Vec::new();
+    let mut pos = file_len;
+
+    loop {
+        let read_start = pos.saturating_sub(TAIL_CHUNK);
+        let read_len = (pos - read_start) as usize;
+        file.seek(SeekFrom::Start(read_start))?;
+
+        let mut buf = vec![0u8; read_len];
+        file.read_exact(&mut buf)?;
+
+        let chunk = String::from_utf8_lossy(&buf);
+        let mut chunk_lines: Vec<String> = chunk.lines().map(String::from).collect();
+
+        // If we're not at the start, the first line is likely partial — remove it
+        if read_start > 0 && !chunk_lines.is_empty() {
+            chunk_lines.remove(0);
+        }
+
+        chunk_lines.append(&mut collected);
+        collected = chunk_lines;
+
+        if collected.len() >= n || read_start == 0 {
+            break;
+        }
+        pos = read_start;
+    }
+
+    let skip = collected.len().saturating_sub(n);
+    Ok(collected.into_iter().skip(skip).collect())
+}
 
 // ---------------------------------------------------------------------------
 // Multi-file source (local)
@@ -29,9 +87,12 @@ pub async fn start_multi_file_source(
             .unwrap_or_else(|| "unknown".to_string());
         names.push(name);
 
-        let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-        for line in content.lines() {
-            let _ = tx.send(line.to_string());
+        // Read only the last TAIL_LINES lines (like tail -n 1000) to avoid
+        // loading huge files into memory and blocking the TUI startup.
+        if let Ok(lines) = read_tail(&path, TAIL_LINES) {
+            for line in lines {
+                let _ = tx.send(line);
+            }
         }
 
         mux.add_file(&path).await?;
