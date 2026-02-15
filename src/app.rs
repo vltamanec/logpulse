@@ -54,7 +54,7 @@ pub struct App {
     pub filename: String,
     pub error_count: u64,
     pub total_count: u64,
-    pub eps_history: Vec<u64>,
+    pub eps_history: VecDeque<u64>,
     pub current_eps: u64,
     eps_counter: u64,
     eps_last_tick: Instant,
@@ -79,7 +79,7 @@ impl App {
             filename,
             error_count: 0,
             total_count: 0,
-            eps_history: vec![0; EPS_WINDOW_SECS],
+            eps_history: VecDeque::from(vec![0; EPS_WINDOW_SECS]),
             current_eps: 0,
             eps_counter: 0,
             eps_last_tick: Instant::now(),
@@ -110,8 +110,8 @@ impl App {
         let now = Instant::now();
         if now.duration_since(self.eps_last_tick) >= Duration::from_secs(1) {
             self.current_eps = self.eps_counter;
-            self.eps_history.remove(0);
-            self.eps_history.push(self.eps_counter);
+            self.eps_history.pop_front();
+            self.eps_history.push_back(self.eps_counter);
             self.eps_counter = 0;
             self.eps_last_tick = now;
         }
@@ -128,22 +128,32 @@ impl App {
         };
     }
 
+    fn matches_filter(&self, entry: &LogEntry) -> bool {
+        if self.error_only && !matches!(entry.level, LogLevel::Error | LogLevel::Fatal) {
+            return false;
+        }
+        if let Some(ref re) = self.filter_regex {
+            if !re.is_match(&entry.raw) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn visible_logs(&self) -> Vec<(usize, &LogEntry)> {
         self.logs
             .iter()
             .enumerate()
-            .filter(|(_, entry)| {
-                if self.error_only && !matches!(entry.level, LogLevel::Error | LogLevel::Fatal) {
-                    return false;
-                }
-                if let Some(ref re) = self.filter_regex {
-                    if !re.is_match(&entry.raw) {
-                        return false;
-                    }
-                }
-                true
-            })
+            .filter(|(_, entry)| self.matches_filter(entry))
             .collect()
+    }
+
+    /// Count visible entries without allocating a Vec.
+    pub fn visible_count(&self) -> usize {
+        self.logs
+            .iter()
+            .filter(|entry| self.matches_filter(entry))
+            .count()
     }
 
     pub fn clear_logs(&mut self) {
@@ -153,8 +163,8 @@ impl App {
     }
 
     pub fn scroll_down(&mut self) {
-        let visible = self.visible_logs().len();
-        if visible > 0 && self.selected_index < visible - 1 {
+        let count = self.visible_count();
+        if count > 0 && self.selected_index < count - 1 {
             self.selected_index += 1;
         }
     }

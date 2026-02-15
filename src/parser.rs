@@ -9,19 +9,31 @@ pub trait LogParser: Send + Sync {
     fn parse(&self, line: &str) -> LogEntry;
 }
 
+/// Case-insensitive substring check without allocating a new String.
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    let needle_bytes = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle_bytes.len())
+        .any(|window| window.eq_ignore_ascii_case(needle_bytes))
+}
+
 fn detect_level(text: &str) -> LogLevel {
-    let upper = text.to_uppercase();
-    if upper.contains("FATAL") || upper.contains("EMERGENCY") || upper.contains("CRITICAL") {
+    if contains_ci(text, "FATAL") || contains_ci(text, "EMERGENCY") || contains_ci(text, "CRITICAL")
+    {
         LogLevel::Fatal
-    } else if upper.contains("ERROR") || upper.contains("ERR") {
+    } else if contains_ci(text, "ERROR") || contains_ci(text, "ERR") {
         LogLevel::Error
-    } else if upper.contains("WARN") || upper.contains("WARNING") {
+    } else if contains_ci(text, "WARN") || contains_ci(text, "WARNING") {
         LogLevel::Warn
-    } else if upper.contains("INFO") {
+    } else if contains_ci(text, "INFO") {
         LogLevel::Info
-    } else if upper.contains("DEBUG") || upper.contains("DBG") {
+    } else if contains_ci(text, "DEBUG") || contains_ci(text, "DBG") {
         LogLevel::Debug
-    } else if upper.contains("TRACE") {
+    } else if contains_ci(text, "TRACE") {
         LogLevel::Trace
     } else {
         LogLevel::Unknown

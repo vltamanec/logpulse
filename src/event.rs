@@ -57,7 +57,7 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
                             app.selected_index = 0;
                         }
                         KeyCode::Enter => {
-                            if !app.visible_logs().is_empty() {
+                            if app.visible_count() > 0 {
                                 app.view_mode = ViewMode::Detail;
                             }
                         }

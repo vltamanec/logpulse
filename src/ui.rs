@@ -19,11 +19,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     draw_header(frame, app, chunks[0]);
-    draw_log_feed(frame, app, chunks[1]);
+
+    // Build visible list once, reuse for feed + detail modal
+    let visible = app.visible_logs();
+    draw_log_feed(frame, app, &visible, chunks[1]);
     draw_footer(frame, app, chunks[2]);
 
     if app.view_mode == ViewMode::Detail {
-        draw_detail_modal(frame, app);
+        draw_detail_modal(frame, app, &visible);
     }
 }
 
@@ -59,7 +62,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(stats, header_chunks[0]);
 
     // Sparkline
-    let spark_data: Vec<u64> = app.eps_history.clone();
+    let spark_data: Vec<u64> = app.eps_history.iter().copied().collect();
     let sparkline = Sparkline::default()
         .block(Block::default().borders(Borders::ALL).title(" Activity "))
         .data(&spark_data)
@@ -67,14 +70,24 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(sparkline, header_chunks[1]);
 }
 
-fn draw_log_feed(frame: &mut Frame, app: &App, area: Rect) {
-    let visible = app.visible_logs();
+fn draw_log_feed(frame: &mut Frame, app: &App, visible: &[(usize, &LogEntry)], area: Rect) {
     let total_visible = visible.len();
 
-    let items: Vec<ListItem> = visible
+    // Calculate viewport BEFORE creating ListItems
+    let height = area.height.saturating_sub(2) as usize; // borders
+    let offset = if app.frozen || app.selected_index < total_visible.saturating_sub(height) {
+        app.selected_index.saturating_sub(height / 2)
+    } else {
+        total_visible.saturating_sub(height)
+    };
+
+    // Only create ListItems for the visible window (offset..offset+height)
+    let window_end = (offset + height + 1).min(total_visible);
+    let items: Vec<ListItem> = visible[offset..window_end]
         .iter()
         .enumerate()
-        .map(|(display_idx, (_orig_idx, entry))| {
+        .map(|(i, (_orig_idx, entry))| {
+            let display_idx = offset + i;
             let line = colorize_entry(entry, app.horizontal_scroll);
             let style = if display_idx == app.selected_index {
                 Style::default()
@@ -87,30 +100,19 @@ fn draw_log_feed(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    // Auto-scroll: show the most recent entries
-    let height = area.height.saturating_sub(2) as usize; // borders
-    let offset = if app.frozen || app.selected_index < total_visible.saturating_sub(height) {
-        app.selected_index.saturating_sub(height / 2)
-    } else {
-        total_visible.saturating_sub(height)
-    };
-
-    let visible_items: Vec<ListItem> = items.into_iter().skip(offset).collect();
-
     let title = if app.frozen {
         " Log Feed [PAUSED - Space to resume] "
     } else {
         " Log Feed "
     };
 
-    let list =
-        List::new(visible_items).block(Block::default().borders(Borders::ALL).title(title).style(
-            Style::default().fg(if app.frozen {
-                Color::Yellow
-            } else {
-                Color::White
-            }),
-        ));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title).style(
+        Style::default().fg(if app.frozen {
+            Color::Yellow
+        } else {
+            Color::White
+        }),
+    ));
 
     frame.render_widget(list, area);
 }
@@ -158,8 +160,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(content.block(block), area);
 }
 
-fn draw_detail_modal(frame: &mut Frame, app: &App) {
-    let visible = app.visible_logs();
+fn draw_detail_modal(frame: &mut Frame, app: &App, visible: &[(usize, &LogEntry)]) {
     let entry = match visible.get(app.selected_index) {
         Some((_, e)) => e,
         None => return,
@@ -214,31 +215,42 @@ fn colorize_entry(entry: &LogEntry, h_scroll: usize) -> Line<'_> {
         LogLevel::Unknown => "",
     };
 
-    let text = if level_tag.is_empty() {
-        entry.raw.clone()
-    } else {
-        format!(
-            "{}{}",
-            level_tag,
-            entry.message.as_deref().unwrap_or(&entry.raw)
-        )
-    };
+    // For Unknown level, just show the raw line (no tag prefix)
+    if level_tag.is_empty() {
+        let scrolled = skip_chars(&entry.raw, h_scroll);
+        return Line::from(Span::styled(scrolled, Style::default().fg(color)));
+    }
 
-    // Apply horizontal scroll — skip first h_scroll characters
-    let scrolled: String = text.chars().skip(h_scroll).collect();
+    let msg = entry.message.as_deref().unwrap_or(&entry.raw);
 
-    if level_tag.is_empty() || h_scroll >= level_tag.len() {
+    if h_scroll >= level_tag.len() {
+        // Tag is fully scrolled off — show only the message part
+        let msg_scroll = h_scroll - level_tag.len();
+        let scrolled = skip_chars(msg, msg_scroll);
         Line::from(Span::styled(scrolled, Style::default().fg(color)))
     } else {
-        let tag_part: String = level_tag.chars().skip(h_scroll).collect();
-        let rest: String = text.chars().skip(level_tag.len().max(h_scroll)).collect();
+        // Tag is partially or fully visible
+        let tag_part = &level_tag[h_scroll..]; // ASCII-safe: level_tag is pure ASCII
+        let rest = msg.to_string();
         Line::from(vec![
             Span::styled(
-                tag_part,
+                tag_part.to_string(),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::raw(rest),
         ])
+    }
+}
+
+/// Skip first `n` chars, returning the remainder as an owned String.
+fn skip_chars(s: &str, n: usize) -> String {
+    if n == 0 {
+        return s.to_string();
+    }
+    // Use char_indices for O(n) skip without creating intermediate iterator alloc
+    match s.char_indices().nth(n) {
+        Some((byte_pos, _)) => s[byte_pos..].to_string(),
+        None => String::new(),
     }
 }
 
