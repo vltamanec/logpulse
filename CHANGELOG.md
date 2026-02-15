@@ -4,7 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.1.0] - 2025-02-15
+## [0.1.1] - 2026-02-15
+
+### Added
+- SSH proxy flags: `-p` (port), `-i` (key), `-J` (jump host / bastion) — no ssh config required
+- Update command shown in `--help` and after install
+- Full tldr page with all commands (contrib/logpulse.md)
+
+## [0.1.0] - 2026-02-15
 
 ### Added
 - Real-time log monitoring with TUI (ratatui + crossterm)
