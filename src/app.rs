@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use ratatui::style::Color;
 use regex::Regex;
 
 use crate::source::FileHistory;
@@ -8,6 +9,13 @@ use crate::source::FileHistory;
 pub const MAX_LOG_LINES: usize = 10_000;
 pub const HISTORY_CHUNK: usize = 500;
 const EPS_WINDOW_SECS: usize = 60;
+
+pub const HIGHLIGHT_COLORS: [Color; 4] = [
+    Color::Magenta,
+    Color::Cyan,
+    Color::LightYellow,
+    Color::LightRed,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -27,12 +35,17 @@ pub struct LogEntry {
     pub timestamp: Option<String>,
     pub message: Option<String>,
     pub metadata: Option<String>,
+    pub extra_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     Filter,
+    Search,
+    Highlight,
+    SavePrompt,
+    TimeJump,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +75,17 @@ pub struct App {
     pub history: Option<FileHistory>,
     pub needs_history_load: bool,
     pub horizontal_scroll: usize,
+    // Multiline grouping
+    pub has_structured_logs: bool,
+    // Search (? key)
+    pub search_text: String,
+    pub search_regex: Option<Regex>,
+    // Highlight (* key)
+    pub highlights: Vec<(Regex, Color)>,
+    // Shared input buffer for Search/Highlight/SavePrompt
+    pub input_buffer: String,
+    // Temporary status message ("Copied!", "Saved 42 entries to file.log")
+    pub status_message: Option<(String, Instant)>,
 }
 
 impl App {
@@ -87,10 +111,32 @@ impl App {
             history: None,
             needs_history_load: false,
             horizontal_scroll: 0,
+            has_structured_logs: false,
+            search_text: String::new(),
+            search_regex: None,
+            highlights: Vec::new(),
+            input_buffer: String::new(),
+            status_message: None,
         }
     }
 
     pub fn add_log(&mut self, entry: LogEntry) {
+        if !matches!(entry.level, LogLevel::Unknown) {
+            self.has_structured_logs = true;
+        }
+
+        // Multiline grouping: in structured logs (Laravel, JSON, Go, etc.),
+        // any Unknown-level line after a known-level entry is a continuation
+        // (stack trace, JSON body, PHP [stacktrace], etc.)
+        if self.has_structured_logs && entry.level == LogLevel::Unknown {
+            if let Some(last) = self.logs.back_mut() {
+                if last.level != LogLevel::Unknown {
+                    last.extra_lines.push(entry.raw);
+                    return;
+                }
+            }
+        }
+
         if matches!(entry.level, LogLevel::Error | LogLevel::Fatal) {
             self.error_count += 1;
         }
@@ -121,7 +167,6 @@ impl App {
         self.filter_regex = if self.filter_text.is_empty() {
             None
         } else {
-            // Try regex first, fall back to literal escaped pattern
             Regex::new(&format!("(?i){}", &self.filter_text))
                 .or_else(|_| Regex::new(&format!("(?i){}", regex::escape(&self.filter_text))))
                 .ok()
@@ -133,7 +178,7 @@ impl App {
             return false;
         }
         if let Some(ref re) = self.filter_regex {
-            if !re.is_match(&entry.raw) {
+            if !re.is_match(&entry.raw) && !entry.extra_lines.iter().any(|l| re.is_match(l)) {
                 return false;
             }
         }
@@ -148,12 +193,20 @@ impl App {
             .collect()
     }
 
-    /// Count visible entries without allocating a Vec.
     pub fn visible_count(&self) -> usize {
         self.logs
             .iter()
             .filter(|entry| self.matches_filter(entry))
             .count()
+    }
+
+    pub fn clamp_selection(&mut self) {
+        let count = self.visible_count();
+        if count == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= count {
+            self.selected_index = count - 1;
+        }
     }
 
     pub fn clear_logs(&mut self) {
@@ -173,8 +226,35 @@ impl App {
         if self.selected_index > 0 {
             self.selected_index -= 1;
         } else if self.history.as_ref().is_some_and(|h| h.has_more()) {
-            // Signal the main loop to load older lines with the proper parser
             self.needs_history_load = true;
+        }
+    }
+
+    pub fn page_down(&mut self, page_size: usize) {
+        let count = self.visible_count();
+        if count > 0 {
+            self.selected_index = (self.selected_index + page_size).min(count - 1);
+        }
+    }
+
+    pub fn page_up(&mut self, page_size: usize) {
+        self.selected_index = self.selected_index.saturating_sub(page_size);
+        if self.selected_index == 0 && self.history.as_ref().is_some_and(|h| h.has_more()) {
+            self.needs_history_load = true;
+        }
+    }
+
+    pub fn jump_to_start(&mut self) {
+        self.selected_index = 0;
+        if self.history.as_ref().is_some_and(|h| h.has_more()) {
+            self.needs_history_load = true;
+        }
+    }
+
+    pub fn jump_to_end(&mut self) {
+        let count = self.visible_count();
+        if count > 0 {
+            self.selected_index = count - 1;
         }
     }
 
@@ -186,8 +266,6 @@ impl App {
         self.horizontal_scroll = self.horizontal_scroll.saturating_sub(20);
     }
 
-    /// Prepend parsed log entries (older history) to the front of the buffer.
-    /// Adjusts selected_index so the cursor stays on the same line.
     pub fn prepend_logs(&mut self, entries: Vec<LogEntry>) {
         let count = entries.len();
         if count == 0 {
@@ -200,5 +278,110 @@ impl App {
             }
         }
         self.selected_index = count;
+    }
+
+    // --- Search ---
+
+    pub fn update_search_regex(&mut self) {
+        self.search_regex = if self.search_text.is_empty() {
+            None
+        } else {
+            Regex::new(&format!("(?i){}", &self.search_text))
+                .or_else(|_| Regex::new(&format!("(?i){}", regex::escape(&self.search_text))))
+                .ok()
+        };
+    }
+
+    pub fn search_next(&mut self) {
+        if let Some(ref re) = self.search_regex {
+            let visible = self.visible_logs();
+            if visible.is_empty() {
+                return;
+            }
+            let start = self.selected_index + 1;
+            for i in 0..visible.len() {
+                let idx = (start + i) % visible.len();
+                if let Some((_, entry)) = visible.get(idx) {
+                    if re.is_match(&entry.raw) || entry.extra_lines.iter().any(|l| re.is_match(l)) {
+                        self.selected_index = idx;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn search_prev(&mut self) {
+        if let Some(ref re) = self.search_regex {
+            let visible = self.visible_logs();
+            if visible.is_empty() {
+                return;
+            }
+            let start = if self.selected_index == 0 {
+                visible.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+            for i in 0..visible.len() {
+                let idx = (start + visible.len() - i) % visible.len();
+                if let Some((_, entry)) = visible.get(idx) {
+                    if re.is_match(&entry.raw) || entry.extra_lines.iter().any(|l| re.is_match(l)) {
+                        self.selected_index = idx;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Highlights ---
+
+    pub fn add_highlight(&mut self, pattern: &str) {
+        if pattern.is_empty() {
+            self.highlights.clear();
+            return;
+        }
+        let color = HIGHLIGHT_COLORS[self.highlights.len() % HIGHLIGHT_COLORS.len()];
+        if let Ok(re) = Regex::new(&format!("(?i){}", pattern))
+            .or_else(|_| Regex::new(&format!("(?i){}", regex::escape(pattern))))
+        {
+            self.highlights.push((re, color));
+        }
+    }
+
+    // --- Time jump ---
+
+    pub fn jump_to_time(&mut self, time_str: &str) {
+        let visible = self.visible_logs();
+        for (idx, (_, entry)) in visible.iter().enumerate() {
+            // Check parsed timestamp first
+            if let Some(ref ts) = entry.timestamp {
+                if ts.contains(time_str) {
+                    self.selected_index = idx;
+                    self.frozen = true; // pause to not lose position
+                    return;
+                }
+            }
+            // Fall back to searching raw line
+            if entry.raw.contains(time_str) {
+                self.selected_index = idx;
+                self.frozen = true;
+                return;
+            }
+        }
+    }
+
+    // --- Status messages ---
+
+    pub fn set_status(&mut self, msg: String) {
+        self.status_message = Some((msg, Instant::now()));
+    }
+
+    pub fn clear_expired_status(&mut self) {
+        if let Some((_, when)) = &self.status_message {
+            if when.elapsed() > Duration::from_secs(3) {
+                self.status_message = None;
+            }
+        }
     }
 }

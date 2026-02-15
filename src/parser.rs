@@ -72,6 +72,7 @@ impl LogParser for JsonParser {
             timestamp: None,
             message,
             metadata: Some(line.to_string()),
+            extra_lines: Vec::new(),
         }
     }
 }
@@ -101,6 +102,7 @@ impl LogParser for LaravelParser {
                 timestamp: Some(caps[1].to_string()),
                 message: Some(caps[3].to_string()),
                 metadata: None,
+                extra_lines: Vec::new(),
             }
         } else {
             fallback_parse(line)
@@ -133,6 +135,7 @@ impl LogParser for DjangoParser {
                 timestamp: Some(caps[1].to_string()),
                 message: Some(caps[4].to_string()),
                 metadata: Some(caps[3].to_string()),
+                extra_lines: Vec::new(),
             }
         } else {
             fallback_parse(line)
@@ -167,6 +170,7 @@ impl LogParser for GoLogParser {
                 timestamp: Some(caps[1].to_string()),
                 message: Some(caps[3].to_string()),
                 metadata: None,
+                extra_lines: Vec::new(),
             };
         }
         if let Some(caps) = GO_STD_RE.captures(line) {
@@ -176,6 +180,7 @@ impl LogParser for GoLogParser {
                 timestamp: Some(caps[1].to_string()),
                 message: Some(caps[2].to_string()),
                 metadata: None,
+                extra_lines: Vec::new(),
             };
         }
         fallback_parse(line)
@@ -215,6 +220,7 @@ impl LogParser for NginxApacheParser {
                 timestamp: Some(caps[2].to_string()),
                 message: Some(format!("{} -> {}", &caps[3], status)),
                 metadata: Some(caps[1].to_string()),
+                extra_lines: Vec::new(),
             }
         } else {
             fallback_parse(line)
@@ -246,6 +252,7 @@ fn fallback_parse(line: &str) -> LogEntry {
         timestamp: None,
         message: Some(line.to_string()),
         metadata: None,
+        extra_lines: Vec::new(),
     }
 }
 

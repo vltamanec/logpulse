@@ -152,18 +152,39 @@ logpulse compose api
 logpulse compose api -f docker-compose.prod.yml
 ```
 
+## Features
+
+- **Smart format detection** — auto-detects JSON, Laravel, Django, Go, Nginx from first lines
+- **Multiline grouping** — stack traces (PHP, Java, Python) auto-grouped with parent error, shown as `[+N lines]`
+- **Regex search** (`?`) — highlights matches inline, navigate with `n` / `N` (wraps around)
+- **Pattern highlighting** (`*`) — up to 4 colors (Magenta, Cyan, Yellow, Red), stack multiple patterns
+- **Copy to clipboard** (`y`) — copies selected entry + stack trace to system clipboard
+- **Export to file** (`s`) — save all visible (filtered) entries to a file
+- **Time jump** (`g`) — type `14:30` to jump to that timestamp, auto-pauses
+- **Pause mode** — freezes display without losing incoming data (buffered in channel)
+- **Lazy history** — for local files, scrolling up loads older lines on demand
+
 ## Hotkeys
 
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
-| `Space` | Pause / Resume (freeze mode) |
-| `/` | Filter — regex search, Enter to apply, Esc to cancel |
+| `Space` | Pause / Resume (freeze mode — data is buffered, not lost) |
+| `/` | Filter — regex, Enter to apply, Esc to cancel |
+| `?` | Search — highlights matches, Enter to apply |
+| `n` / `N` | Next / Previous search match |
 | `e` | Toggle error-only mode |
+| `*` | Highlight pattern (empty = clear all) |
+| `y` | Copy selected entry to clipboard |
+| `s` | Save visible entries to file |
+| `g` | Jump to time (e.g. `14:30`, `2024-01-15`) |
 | `Enter` | Detail view (JSON pretty-print / stacktrace) |
 | `c` | Clear screen buffer |
 | `j` / `k` or `Up` / `Down` | Navigate log lines |
-| `Esc` | Close detail view / cancel filter |
+| `PgDn` / `PgUp` | Jump 50 lines |
+| `Home` / `End` | Jump to first / last entry |
+| `Left` / `Right` | Horizontal scroll |
+| `Esc` | Close detail view / cancel input |
 | `Ctrl+C` | Force quit |
 
 ## Supported Formats
@@ -190,9 +211,9 @@ Use `--format` to override: `logpulse --format nginx access.log`
 │ [INFO]  Request processed successfully                           │
 │ [WARN]  Slow query detected (2.5s)                              │
 │ [DEBUG] Cache hit for key=user:123                               │
-│ [ERROR] Undefined variable: $user                                │
+│ [ERROR] Undefined variable: $user                    [+12 lines]│
 ├─ Help ──────────────────────────────────────────────────────────┤
-│ q:quit Space:pause /:filter e:errors Enter:detail c:clear ↑↓:nav│
+│ q:quit Space:pause /:filter ?:search e:errors y:copy *:mark s:save│
 └─────────────────────────────────────────────────────────────────┘
 ```
 

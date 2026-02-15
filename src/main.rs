@@ -50,9 +50,13 @@ enum FormatArg {
 
 \x1b[1mHotkeys:\x1b[0m
   q        Quit              Space    Pause / Resume
-  /        Filter (regex)    e        Error-only mode
-  Enter    Detail view       c        Clear buffer
-  j/k ↑/↓  Navigate          Ctrl+C   Force quit
+  /        Filter (regex)    ?        Search (n/N navigate)
+  e        Error-only mode   *        Highlight pattern
+  Enter    Detail view       y        Copy to clipboard
+  c        Clear buffer      s        Save visible to file
+  g        Jump to time      j/k ↑/↓  Navigate
+  PgDn/PgUp  Jump 50 lines   Home/End  First/Last
+  ←→       Horizontal scroll Ctrl+C   Force quit
 
 \x1b[1mUpdate:\x1b[0m
   curl -fsSL https://raw.githubusercontent.com/vltamanec/logpulse/main/install.sh | sh")]
@@ -310,15 +314,22 @@ async fn run_tui(
             }
         }
 
-        // Drain all available lines at once (not one-by-one)
-        while let Ok(line) = rx.try_recv() {
-            if !app.frozen {
+        // Drain available lines in batches to keep UI responsive.
+        // When frozen, leave lines in the channel (don't lose them).
+        if !app.frozen {
+            let mut drained = 0;
+            while let Ok(line) = rx.try_recv() {
                 let entry = detected_parser.parse(&line);
                 app.add_log(entry);
+                drained += 1;
+                if drained >= 5000 {
+                    break;
+                }
             }
         }
 
         app.tick_eps();
+        app.clear_expired_status();
     }
 
     disable_raw_mode()?;

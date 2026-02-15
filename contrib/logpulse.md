@@ -56,6 +56,14 @@
 
 `logpulse compose {{service_name}}`
 
+- Monitor a file inside a Kubernetes pod:
+
+`logpulse k8s {{pod_name}} {{/var/log/app.log}}`
+
 - Generate shell completions:
 
 `logpulse --completions {{bash|zsh|fish}}`
+
+- Interactive hotkeys inside TUI:
+
+`? search, n/N navigate, * highlight, y copy, s save, g time-jump, / filter, e errors`

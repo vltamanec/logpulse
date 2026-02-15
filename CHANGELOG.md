@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.2] - 2026-02-15
+
+### Added
+- Multiline log grouping — stack traces (PHP, Java, Python, Go) auto-grouped with parent error entry, shown as `[+N lines]`
+- Regex search (`?` key) with inline yellow highlighting, `n`/`N` navigation (wraps around)
+- Pattern highlighting (`*` key) — up to 4 simultaneous colors, empty pattern clears all
+- Copy to clipboard (`y` key) — copies selected entry + continuation lines via `pbcopy` / `xclip`
+- Export to file (`s` key) — saves all visible (filtered) entries to a file
+- Time jump (`g` key) — type a timestamp fragment to jump to that log entry, auto-pauses
+- Page Up / Page Down — jump 50 lines at a time
+- Home / End — jump to first / last log entry
+- Status bar messages — temporary notifications for copy, save, highlight actions
+
+### Fixed
+- Pause mode now buffers incoming data (previously lines were lost while paused)
+- `selected_index` out-of-bounds crash when filter reduces visible entries
+- Drain batch limit (5000/tick) prevents UI freeze on log bursts
+
+### Improved
+- `VecDeque` for EPS history (was `Vec` with O(n) remove)
+- Only visible window ListItems rendered (not all 10k entries)
+- `visible_logs()` called once per frame (was 3+ times)
+- Zero-alloc case-insensitive level detection in parser
+
 ## [0.1.1] - 2026-02-15
 
 ### Added
