@@ -15,7 +15,6 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
 
 use app::App;
 use parser::{detect_parser, get_parser_by_name, LogParser, PlainParser};
@@ -287,8 +286,6 @@ async fn run_tui(
     }
     drop(initial_lines);
 
-    let mut tick_interval = interval(Duration::from_millis(100));
-
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
 
@@ -313,17 +310,15 @@ async fn run_tui(
             }
         }
 
-        tokio::select! {
-            Some(line) = rx.recv() => {
-                if !app.frozen {
-                    let entry = detected_parser.parse(&line);
-                    app.add_log(entry);
-                }
-            }
-            _ = tick_interval.tick() => {
-                app.tick_eps();
+        // Drain all available lines at once (not one-by-one)
+        while let Ok(line) = rx.try_recv() {
+            if !app.frozen {
+                let entry = detected_parser.parse(&line);
+                app.add_log(entry);
             }
         }
+
+        app.tick_eps();
     }
 
     disable_raw_mode()?;
