@@ -75,7 +75,7 @@ fn draw_log_feed(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(display_idx, (_orig_idx, entry))| {
-            let line = colorize_entry(entry);
+            let line = colorize_entry(entry, app.horizontal_scroll);
             let style = if display_idx == app.selected_index {
                 Style::default()
                     .bg(Color::DarkGray)
@@ -140,7 +140,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("c", Style::default().fg(Color::Cyan)),
                 Span::raw(":clear "),
                 Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-                Span::raw(":navigate"),
+                Span::raw(":nav "),
+                Span::styled("←→", Style::default().fg(Color::Cyan)),
+                Span::raw(":scroll"),
             ]);
             Paragraph::new(help)
         }
@@ -200,7 +202,7 @@ fn draw_detail_modal(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-fn colorize_entry(entry: &LogEntry) -> Line<'_> {
+fn colorize_entry(entry: &LogEntry, h_scroll: usize) -> Line<'_> {
     let color = level_color(entry.level);
     let level_tag = match entry.level {
         LogLevel::Fatal => "[FATAL] ",
@@ -212,15 +214,30 @@ fn colorize_entry(entry: &LogEntry) -> Line<'_> {
         LogLevel::Unknown => "",
     };
 
-    if level_tag.is_empty() {
-        Line::from(Span::raw(&entry.raw))
+    let text = if level_tag.is_empty() {
+        entry.raw.clone()
     } else {
+        format!(
+            "{}{}",
+            level_tag,
+            entry.message.as_deref().unwrap_or(&entry.raw)
+        )
+    };
+
+    // Apply horizontal scroll — skip first h_scroll characters
+    let scrolled: String = text.chars().skip(h_scroll).collect();
+
+    if level_tag.is_empty() || h_scroll >= level_tag.len() {
+        Line::from(Span::styled(scrolled, Style::default().fg(color)))
+    } else {
+        let tag_part: String = level_tag.chars().skip(h_scroll).collect();
+        let rest: String = text.chars().skip(level_tag.len().max(h_scroll)).collect();
         Line::from(vec![
             Span::styled(
-                level_tag,
+                tag_part,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(entry.message.as_deref().unwrap_or(&entry.raw)),
+            Span::raw(rest),
         ])
     }
 }

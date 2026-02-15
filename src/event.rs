@@ -70,6 +70,12 @@ pub fn handle_events(app: &mut App) -> std::io::Result<bool> {
                         KeyCode::Down | KeyCode::Char('j') => {
                             app.scroll_down();
                         }
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            app.scroll_right();
+                        }
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            app.scroll_left();
+                        }
                         _ => {}
                     },
                 },

@@ -63,17 +63,139 @@ fn read_tail(path: &std::path::Path, n: usize) -> std::io::Result<Vec<String>> {
     Ok(collected.into_iter().skip(skip).collect())
 }
 
+/// Read the last `n` lines, returning (lines, byte_offset_of_first_returned_line).
+/// `byte_offset` is 0 if the whole file was read; otherwise points to where reading started.
+fn read_tail_with_offset(path: &std::path::Path, n: usize) -> std::io::Result<(Vec<String>, u64)> {
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+
+    if file_len == 0 {
+        return Ok((Vec::new(), 0));
+    }
+
+    if file_len <= TAIL_CHUNK {
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)?;
+        let lines: Vec<String> = buf.lines().map(String::from).collect();
+        let skip = lines.len().saturating_sub(n);
+        return Ok((lines.into_iter().skip(skip).collect(), 0));
+    }
+
+    let mut collected = Vec::new();
+    let mut pos = file_len;
+
+    loop {
+        let read_start = pos.saturating_sub(TAIL_CHUNK);
+        let read_len = (pos - read_start) as usize;
+        file.seek(SeekFrom::Start(read_start))?;
+
+        let mut buf = vec![0u8; read_len];
+        file.read_exact(&mut buf)?;
+
+        let chunk = String::from_utf8_lossy(&buf);
+        let mut chunk_lines: Vec<String> = chunk.lines().map(String::from).collect();
+
+        if read_start > 0 && !chunk_lines.is_empty() {
+            chunk_lines.remove(0);
+        }
+
+        chunk_lines.append(&mut collected);
+        collected = chunk_lines;
+        pos = read_start;
+
+        if collected.len() >= n || read_start == 0 {
+            break;
+        }
+    }
+
+    let skip = collected.len().saturating_sub(n);
+    Ok((collected.into_iter().skip(skip).collect(), pos))
+}
+
+/// Lazy history loader for local files. Reads older lines on demand
+/// when the user scrolls to the top of the buffer.
+pub struct FileHistory {
+    path: PathBuf,
+    offset: u64, // byte offset in file — everything below this has been loaded
+}
+
+impl FileHistory {
+    pub fn new(path: PathBuf, offset: u64) -> Self {
+        Self { path, offset }
+    }
+
+    /// Returns true if there are older lines available to load.
+    pub fn has_more(&self) -> bool {
+        self.offset > 0
+    }
+
+    /// Load `n` older lines from the file. Returns them in chronological order.
+    pub fn load_older(&mut self, n: usize) -> Vec<String> {
+        if self.offset == 0 {
+            return Vec::new();
+        }
+
+        let mut file = match std::fs::File::open(&self.path) {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut collected = Vec::new();
+        let mut pos = self.offset;
+
+        loop {
+            let read_start = pos.saturating_sub(TAIL_CHUNK);
+            let read_len = (pos - read_start) as usize;
+            if read_len == 0 {
+                break;
+            }
+
+            if file.seek(SeekFrom::Start(read_start)).is_err() {
+                break;
+            }
+
+            let mut buf = vec![0u8; read_len];
+            if file.read_exact(&mut buf).is_err() {
+                break;
+            }
+
+            let chunk = String::from_utf8_lossy(&buf);
+            let mut chunk_lines: Vec<String> = chunk.lines().map(String::from).collect();
+
+            if read_start > 0 && !chunk_lines.is_empty() {
+                chunk_lines.remove(0);
+            }
+
+            chunk_lines.append(&mut collected);
+            collected = chunk_lines;
+            pos = read_start;
+
+            if collected.len() >= n || read_start == 0 {
+                break;
+            }
+        }
+
+        self.offset = pos;
+        let skip = collected.len().saturating_sub(n);
+        collected.into_iter().skip(skip).collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Multi-file source (local)
 // ---------------------------------------------------------------------------
 
 pub async fn start_multi_file_source(
     paths: Vec<PathBuf>,
-) -> Result<(mpsc::UnboundedReceiver<String>, String), Box<dyn std::error::Error>> {
+) -> Result<
+    (mpsc::UnboundedReceiver<String>, String, Option<FileHistory>),
+    Box<dyn std::error::Error>,
+> {
     let (tx, rx) = mpsc::unbounded_channel();
 
     let mut names: Vec<String> = Vec::new();
     let mut mux = linemux::MuxedLines::new()?;
+    let mut history: Option<FileHistory> = None;
 
     for path in &paths {
         let path = path.canonicalize().unwrap_or(path.clone());
@@ -87,9 +209,16 @@ pub async fn start_multi_file_source(
             .unwrap_or_else(|| "unknown".to_string());
         names.push(name);
 
-        // Read only the last TAIL_LINES lines (like tail -n 1000) to avoid
-        // loading huge files into memory and blocking the TUI startup.
-        if let Ok(lines) = read_tail(&path, TAIL_LINES) {
+        // Read only the last TAIL_LINES lines to avoid loading huge files.
+        // For single files, also track offset for lazy history loading.
+        if paths.len() == 1 {
+            if let Ok((lines, offset)) = read_tail_with_offset(&path, TAIL_LINES) {
+                for line in &lines {
+                    let _ = tx.send(line.clone());
+                }
+                history = Some(FileHistory::new(path.clone(), offset));
+            }
+        } else if let Ok(lines) = read_tail(&path, TAIL_LINES) {
             for line in lines {
                 let _ = tx.send(line);
             }
@@ -118,7 +247,7 @@ pub async fn start_multi_file_source(
         }
     });
 
-    Ok((rx, display_name))
+    Ok((rx, display_name, history))
 }
 
 // ---------------------------------------------------------------------------

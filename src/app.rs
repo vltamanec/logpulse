@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 
+use crate::source::FileHistory;
+
 pub const MAX_LOG_LINES: usize = 10_000;
+pub const HISTORY_CHUNK: usize = 500;
 const EPS_WINDOW_SECS: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +59,9 @@ pub struct App {
     eps_counter: u64,
     eps_last_tick: Instant,
     pub should_quit: bool,
+    pub history: Option<FileHistory>,
+    pub needs_history_load: bool,
+    pub horizontal_scroll: usize,
 }
 
 impl App {
@@ -78,6 +84,9 @@ impl App {
             eps_counter: 0,
             eps_last_tick: Instant::now(),
             should_quit: false,
+            history: None,
+            needs_history_load: false,
+            horizontal_scroll: 0,
         }
     }
 
@@ -151,6 +160,35 @@ impl App {
     }
 
     pub fn scroll_up(&mut self) {
-        self.selected_index = self.selected_index.saturating_sub(1);
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+        } else if self.history.as_ref().is_some_and(|h| h.has_more()) {
+            // Signal the main loop to load older lines with the proper parser
+            self.needs_history_load = true;
+        }
+    }
+
+    pub fn scroll_right(&mut self) {
+        self.horizontal_scroll += 20;
+    }
+
+    pub fn scroll_left(&mut self) {
+        self.horizontal_scroll = self.horizontal_scroll.saturating_sub(20);
+    }
+
+    /// Prepend parsed log entries (older history) to the front of the buffer.
+    /// Adjusts selected_index so the cursor stays on the same line.
+    pub fn prepend_logs(&mut self, entries: Vec<LogEntry>) {
+        let count = entries.len();
+        if count == 0 {
+            return;
+        }
+        for entry in entries.into_iter().rev() {
+            self.logs.push_front(entry);
+            if self.logs.len() > MAX_LOG_LINES {
+                self.logs.pop_back();
+            }
+        }
+        self.selected_index = count;
     }
 }

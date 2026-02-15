@@ -169,9 +169,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         FormatArg::Plain => Some("plain"),
     };
 
-    let (rx, name) = match cli.command {
+    let (rx, name, history) = match cli.command {
         Some(Commands::Docker { container, file }) => {
-            source::start_docker_source(container, file).await?
+            let (rx, name) = source::start_docker_source(container, file).await?;
+            (rx, name, None)
         }
         Some(Commands::Ssh {
             target,
@@ -186,7 +187,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 key,
                 jump,
             };
-            parse_ssh_args(opts, args).await?
+            let (rx, name) = parse_ssh_args(opts, args).await?;
+            (rx, name, None)
         }
         Some(Commands::K8s {
             pod,
@@ -194,28 +196,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             container,
             label,
             file,
-        }) => source::start_k8s_source(pod, namespace, container, label, file).await?,
+        }) => {
+            let (rx, name) =
+                source::start_k8s_source(pod, namespace, container, label, file).await?;
+            (rx, name, None)
+        }
         Some(Commands::Compose { service, file }) => {
-            source::start_compose_source(service, file).await?
+            let (rx, name) = source::start_compose_source(service, file).await?;
+            (rx, name, None)
         }
         None => {
             let is_tty = atty::is(atty::Stream::Stdin);
 
             if cli.files.is_empty() && !is_tty {
-                source::start_stdin_source().await?
+                let (rx, name) = source::start_stdin_source().await?;
+                (rx, name, None)
             } else if cli.files.is_empty() {
                 eprintln!("Usage: logpulse <FILE>... | logpulse docker <NAME> | logpulse ssh ... | logpulse k8s ...");
                 eprintln!("Try: logpulse --help");
                 std::process::exit(1);
             } else if cli.files.len() == 1 && cli.files[0].to_string_lossy() == "-" {
-                source::start_stdin_source().await?
+                let (rx, name) = source::start_stdin_source().await?;
+                (rx, name, None)
             } else {
                 source::start_multi_file_source(cli.files).await?
             }
         }
     };
 
-    run_tui(rx, name, format_name).await
+    run_tui(rx, name, format_name, history).await
 }
 
 /// Parse SSH subcommand args: ssh user@host docker myapi [file] OR ssh user@host /path/to/file
@@ -243,6 +252,7 @@ async fn run_tui(
     mut rx: mpsc::UnboundedReceiver<String>,
     name: String,
     format_override: Option<&str>,
+    history: Option<source::FileHistory>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut initial_lines: Vec<String> = Vec::new();
     while let Ok(line) = rx.try_recv() {
@@ -269,6 +279,7 @@ async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(name);
+    app.history = history;
 
     for line in &initial_lines {
         let entry = detected_parser.parse(line);
@@ -287,6 +298,19 @@ async fn run_tui(
 
         if app.should_quit {
             break;
+        }
+
+        // Lazy history: load older lines when user scrolls to top
+        if app.needs_history_load {
+            app.needs_history_load = false;
+            if let Some(ref mut hist) = app.history {
+                let raw_lines = hist.load_older(app::HISTORY_CHUNK);
+                let entries: Vec<_> = raw_lines
+                    .iter()
+                    .map(|line| detected_parser.parse(line))
+                    .collect();
+                app.prepend_logs(entries);
+            }
         }
 
         tokio::select! {
